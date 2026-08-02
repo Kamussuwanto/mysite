@@ -1,0 +1,6 @@
+mysite
+myapp
+manage.py 
+mediafiles
+staticfiles
+db.sqlite3
