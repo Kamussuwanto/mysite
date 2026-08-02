@@ -1,0 +1,207 @@
+{% load humanize %}
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Secure Dashboard</title>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+        .alert-success { color: green; font-weight: bold; }
+        .alert-error { color: red; font-weight: bold; }
+        .file-list { margin-top: 30px; border-top: 1px solid #ccc; padding-top: 20px; }
+        .file-item { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 12px 0; }
+        .logout-box { float: right; }
+        .actions { display: flex; align-items: center; }
+    </style>
+</head>
+<body>
+
+    <!-- Security-Conscious POST Logout Layout -->
+    <div class="logout-box">
+        <form action="{% url 'logout' %}" method="post">
+            {% csrf_token %}
+            <button type="submit">Log Out</button>
+        </form>
+    </div>
+
+    <h2>Welcome, {{ request.user.username }}!</h2>
+
+    <!-- Combined Count and Quota Space Storage Trackers -->
+    <div style="margin-bottom: 25px;">
+        <!-- Count Badge Check -->
+        {% if files|length >= 10 %}
+            <div class="counter-badge" style="display: inline-block; background-color: #fee2e2; color: #991b1b; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; margin-right: 10px; border: 1px solid #fca5a5;">
+                ⚠️ Slots Full: 10/10 files
+            </div>
+        {% else %}
+            <div class="counter-badge" style="display: inline-block; background-color: #e0f2fe; color: #0369a1; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; margin-right: 10px; border: 1px solid #bae6fd;">
+                📊 Slots: {{ files|length }} / 10 files
+            </div>
+        {% endif %}
+
+        <!-- Space Quota Badge Check (Turns Red if usage passes 45MB) -->
+        {% if mb_used >= 45.0 %}
+            <div class="quota-badge" style="display: inline-block; background-color: #fee2e2; color: #991b1b; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; border: 1px solid #fca5a5;">
+                ⚠️ Space Critical: {{ mb_used }}MB / 50.0MB Used
+            </div>
+        {% else %}
+            <div class="quota-badge" style="display: inline-block; background-color: #f0fdf4; color: #166534; padding: 6px 14px; border-radius: 20px; font-weight: bold; font-size: 0.9rem; border: 1px solid #bbf7d0;">
+                💾 Space: {{ mb_used }}MB / 50.0MB Used
+            </div>
+        {% endif %}
+    </div>
+
+
+<!-- Form Element View -->
+<form id="upload-form" method="post" enctype="multipart/form-data" style="margin-bottom: 20px;">
+    {% csrf_token %}
+
+    {% if form.non_field_errors %}
+        <div style="color: red; font-weight: bold; margin-bottom: 15px;">
+            {{ form.non_field_errors }}
+        </div>
+    {% endif %}
+
+    {% for field in form %}
+        <p>
+            {{ field.label_tag }} {{ field }}
+            {% if field.errors %}
+                <span style="color: red; display: block; font-weight: bold; margin-top: 5px;">
+                    {{ field.errors|striptags }}
+                </span>
+            {% endif %}
+        </p>
+    {% endfor %}
+
+    <!-- Progress Bar Container (Hidden by Default) -->
+    <div id="progress-container" style="display: none; margin: 15px 0; width: 100%; background-color: #e2e8f0; border-radius: 4px; overflow: hidden;">
+        <div id="progress-bar" style="width: 0%; height: 20px; background-color: #2563eb; transition: width 0.1s ease; text-align: center; color: white; font-size: 0.85rem; line-height: 20px; font-weight: bold;">
+            0%
+        </div>
+    </div>
+    <p id="status-text" style="font-size: 0.9rem; color: #475569; margin-top: 5px; display: none;"></p>
+
+    {% if files|length >= 10 or mb_used >= 50.0 %}
+        <button type="submit" disabled style="background-color: #cbd5e1; color: #64748b; border: 1px solid #94a3b8; cursor: not-allowed; padding: 6px 12px; border-radius: 4px;">
+            Upload Disabled (Storage Restricted)
+        </button>
+    {% else %}
+        <button type="submit" id="submit-btn" style="padding: 6px 12px; border-radius: 4px; cursor: pointer; background-color: #2563eb; color: white; border: none; font-weight: bold;">
+            Upload File
+        </button>
+    {% endif %}
+</form>
+
+<!-- JavaScript Hook to Track File Stream Data -->
+<script>
+    document.getElementById('upload-form').addEventListener('submit', function(e) {
+        // Prevent normal page reloading
+        e.preventDefault();
+
+        const form = this;
+        const formData = new FormData(form);
+        const xhr = new XMLHttpRequest();
+
+        const progressBar = document.getElementById('progress-bar');
+        const progressContainer = document.getElementById('progress-container');
+        const submitBtn = document.getElementById('submit-btn');
+        const statusText = document.getElementById('status-text');
+
+        // Unhide progress layout and freeze button to prevent double-clicks
+        progressContainer.style.display = 'block';
+        statusText.style.display = 'block';
+        statusText.innerText = "Preparing upload...";
+        if(submitBtn) {
+            submitBtn.disabled = true;
+            submitBtn.style.backgroundColor = '#cbd5e1';
+            submitBtn.innerText = 'Uploading...';
+        }
+
+        // Track standard upload progress stream events
+        xhr.upload.addEventListener('progress', function(e) {
+            if (e.lengthComputable) {
+                const percentComplete = Math.round((e.loaded / e.total) * 100);
+                progressBar.style.width = percentComplete + '%';
+                progressBar.innerText = percentComplete + '%';
+
+                if(percentComplete === 100) {
+                    statusText.innerText = "Processing on server... Please wait.";
+                } else {
+                    statusText.innerText = `Uploaded ${Math.round(e.loaded/(1024*1024))}MB of ${Math.round(e.total/(1024*1024))}MB`;
+                }
+            }
+        });
+
+        // Trigger on completion or redirect
+        xhr.onload = function() {
+            // Reload the layout page seamlessly so Django flash messages and new data appear
+            window.location.reload();
+        };
+
+        xhr.onerror = function() {
+            statusText.innerText = "An error occurred during the upload process.";
+            if(submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.style.backgroundColor = '#2563eb';
+                submitBtn.innerText = 'Upload File';
+            }
+        };
+
+        // Send payload context
+        xhr.open('POST', form.action || window.location.href, true);
+        xhr.send(formData);
+    });
+</script>
+
+
+    <!-- Dynamic Status Notification Alerts -->
+    {% if messages %}
+        {% for message in messages %}
+            <p class="alert-{{ message.tags }}">{{ message }}</p>
+        {% endfor %}
+    {% endif %}
+
+    <!-- File Management Inventory Inventory -->
+    <div class="file-list">
+        <h3>Your Uploaded Files</h3>
+        {% if files %}
+            {% for file_obj in files %}
+                <div class="file-item">
+
+                    <!-- File Metadata Block -->
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <!-- Custom File Extension Icon from Model -->
+                        <span style="font-size: 1.5rem;">{{ file_obj.get_icon }}</span>
+
+                        <div style="display: flex; flex-direction: column;">
+                            <span style="font-weight: 500; color: #333;">{{ file_obj.get_clean_filename }}</span>
+                            <span style="font-size: 0.85rem; color: #666; margin-top: 3px;">
+                                Uploaded {{ file_obj.uploaded_at|naturaltime }}
+                            </span>
+                        </div>
+                    </div>
+
+                    <!-- File Actions Layout -->
+                    <div class="actions">
+                        <a href="{{ file_obj.file.url }}" download class="btn-download" style="margin-right: 15px; color: green; text-decoration: none; font-weight: bold;">
+                            📥 Download
+                        </a>
+
+                        <form action="{% url 'delete_file' file_obj.id %}" method="post" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" onclick="return confirm('Are you sure you want to delete this file?')" style="color:red; background:none; border:none; cursor:pointer; font-weight: bold;">
+                                ❌ Delete
+                            </button>
+                        </form>
+                    </div>
+
+                </div>
+            {% endfor %}
+        {% else %}
+            <p>No files uploaded yet.</p>
+        {% endif %}
+    </div>
+
+</body>
+</html>

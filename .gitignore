@@ -1,6 +1,4 @@
-mysite
-myapp
-manage.py 
-mediafiles
-staticfiles
 db.sqlite3
+__pycache__
+*.pyc
+myenv

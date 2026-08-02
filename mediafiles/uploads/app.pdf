@@ -1,0 +1,486 @@
+from flask import Flask, render_template, request, redirect, url_for, flash
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy import text
+import re  # Built-in Python library to check email formats
+from werkzeug.security import generate_password_hash
+
+# ==========================================
+# 1. INITIALIZATION & CONFIGURATION
+# ==========================================
+
+app = Flask(__name__)
+app.config["DEBUG"] = True
+app.secret_key = 'f4a57004880641d7d5074af34d0eb55036eada0a73021c1d'
+
+# 1. Configure Flask-SQLAlchemy
+SQLALCHEMY_DATABASE_URI = "mysql+mysqlconnector://{username}:{password}@{hostname}/{databasename}".format(
+    username="kamus3",
+    password="Mm688688",
+    hostname="kamus3.mysql.pythonanywhere-services.com",
+    databasename="kamus3$kamf",
+)
+app.config["SQLALCHEMY_DATABASE_URI"] = SQLALCHEMY_DATABASE_URI
+app.config["SQLALCHEMY_POOL_RECYCLE"] = 299
+app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+#app.config['SESSION_REFRESH_EACH_REQUEST'] = True
+
+"""
+app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
+    "connect_args": {
+        "collation": "utf8mb4_general_ci"
+    }
+}
+"""
+db = SQLAlchemy(app)
+
+# Initialize Flask-Login Management System
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = "login" # Automatically routes unauthenticated clicks here
+
+# ==========================================
+# 2. USER AUTHENTICATION MODEL
+# ==========================================
+class User(UserMixin):
+    # CRITICAL: Make sure customer_name=None and is_admin=0 have default assignments!
+    def __init__(self, id, username, customer_name=None, is_admin=0):
+        self.id = id
+        self.username = username
+        self.customer_name = customer_name
+        self.is_admin = is_admin
+
+@login_manager.user_loader
+def load_user(user_id):
+    # FETCH ADDED: isAdmin column from database query
+    query = text("SELECT customerID, username, customerName, isAdmin FROM users WHERE customerID = :id")
+    result = db.session.execute(query, {"id": int(user_id)}).mappings().first()
+    if result:
+        return User(
+            id=result["customerID"],
+            username=result["username"],
+            customer_name=result["customerName"],
+            is_admin=result["isAdmin"] # Pass value to User object
+        )
+    return None
+
+# ==========================================
+# 3. ROUTE CONTROLLERS (AUTHENTICATION)
+# ==========================================
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'GET':
+        return render_template('login.html')
+
+    username_input = request.form.get('username')
+    password_input = request.form.get('password')
+
+    try:
+        # Check if the username exists in the users table
+        query = text("SELECT customerID, username, password_hash FROM users WHERE username = :user")
+        user_record = db.session.execute(query, {"user": username_input}).mappings().first()
+
+        # Validate username match and verify hashed password security credentials
+        if user_record and check_password_hash(user_record["password_hash"], password_input):
+            user_obj = User(id=user_record["customerID"], username=user_record["username"])
+            login_user(user_obj) # Create the secure session cookie tracker
+            flash("Logged in successfully!", "success")
+            return redirect(url_for('checkout'))
+        else:
+            return render_template('login.html', error="Invalid username or password credentials.")
+
+    except Exception as e:
+        # CRITICAL FIX: Clear the broken state from the connection pool immediately
+        db.session.rollback()
+        return f"Database Authenticator Error Encountered: {str(e)}"
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    flash("You have been logged out.", "info")
+    return redirect(url_for('login'))
+
+# ==========================================
+# 4. ROUTE CONTROLLERS (STOREFRONT & CHECKOUT)
+# ==========================================
+
+    # ==========================================
+    # HANDLE STOREFRONT PAGE (GET REQUEST)
+    # ==========================================
+
+@app.route('/checkout', methods=['GET', 'POST'])
+@login_required
+def checkout():
+    if request.method == 'GET':
+        try:
+            get_products_query = text("SELECT productCode, productName, price, stock FROM products")
+            products_result = db.session.execute(get_products_query).mappings().all()
+
+            # CLEANER: You only need to pass the products list now!
+            return render_template('storefront.html', products=products_result)
+
+        except Exception as error:
+            db.session.rollback()
+            return f"Failed to load products table dashboard. Error: {str(error)}"
+
+    # ==========================================
+    # HANDLE INVENTORY PURCHASE (POST REQUEST)
+    # ==========================================
+    customer_id = current_user.id
+    shopping_cart = []
+    total_items_count = int(request.form.get("total_items_count", 0))
+
+    for i in range(total_items_count):
+        qty = int(request.form.get(f"qty_{i}", 0))
+        if qty > 0:
+            shopping_cart.append({
+                "code": request.form.get(f"code_{i}"),
+                "name": request.form.get(f"name_{i}"),
+                "qty": qty,
+                "price": float(request.form.get(f"price_{i}"))
+            })
+
+    if not shopping_cart:
+        flash("Your cart is completely empty. Please increase your item quantities.", "danger")
+        return redirect(url_for('checkout'))
+
+    try:
+        # Step A: Insert master purchase row into orders
+        insert_order_query = text("INSERT INTO orders (customerID) VALUES (:customer_id)")
+        result = db.session.execute(insert_order_query, {"customer_id": customer_id})
+        new_order_number = result.lastrowid
+
+        # Step B: Insert dynamic child items list into order_details
+        insert_items_query = text("""
+            INSERT INTO order_details (orderNumber, productCode, productName, quantity, price)
+            VALUES (:order_num, :code, :name, :qty, :price)
+        """)
+        items_data = [
+            {
+                "order_num": new_order_number,
+                "code": item["code"],
+                "name": item["name"],
+                "qty": item["qty"],
+                "price": item["price"]
+            }
+            for item in shopping_cart
+        ]
+        db.session.execute(insert_items_query, items_data)
+
+        # Step C: Deduct item quantities safely.
+
+        # =======================================================
+        # Step C: Check and deduct item quantities safely
+        # =======================================================
+
+        # 1. Look up the exact product's current stock first
+        check_stock_query = text("SELECT stock, productName FROM products WHERE productCode = :code")
+
+        # 2. Update query layout
+        deduct_stock_query = text("""
+            UPDATE products
+            SET stock = stock - :qty
+            WHERE productCode = :code
+        """)
+
+        for item in shopping_cart:
+            # Fetch the latest accurate stock number from MySQL
+            product_record = db.session.execute(check_stock_query, {"code": item["code"]}).mappings().first()
+
+            # If the item doesn't exist, or the requested quantity is too high, throw the alert!
+            if not product_record or product_record["stock"] < item["qty"]:
+                item_name = product_record["productName"] if product_record else item["name"]
+                raise Exception(f"Inadequate stock inventory remaining for item: {item_name}")
+
+            # If stock is perfectly fine, execute the subtraction safely
+            db.session.execute(deduct_stock_query, {"qty": item["qty"], "code": item["code"]})
+
+        # Step D: Complete the secure atomic commit handshake
+        db.session.commit()
+
+        # Step D: Complete the secure atomic commit handshake
+        #db.session.commit()
+        return render_template('checkout.html', order_id=new_order_number, cart=shopping_cart)
+
+
+    #except Exception as error:
+        #db.session.rollback()
+
+        # CRITICAL DEBUG: This forces the screen to show you the EXACT error text!
+        #return f"STOP! Checkout crashed because of this hidden error: {str(error)}"
+    except Exception as error:
+        # CRITICAL PROTECTION: Erase the broken order attempt from memory completely
+        db.session.rollback()
+
+        # FRIENDLY REDIRECT: Send the user back to the storefront with a red error alert
+        flash(f"Transaction cancelled: {str(error)}", "danger")
+        return redirect(url_for('checkout'))
+
+# ==========================================
+#5. Regsteration Route with email and customer name
+# ==========================================
+
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'GET':
+        return render_template('register.html')
+
+    username_input = request.form.get('username')
+    password_input = request.form.get('password')
+    email_input = request.form.get('email')
+    name_input = request.form.get('customerName')
+
+    if not all([username_input, password_input, email_input, name_input]):
+        return render_template('register.html', error="All fields are required.")
+
+    try:
+        # 1. Check if username or email already exists
+        check_query = text("SELECT customerID FROM users WHERE username = :user OR email = :email")
+        existing_user = db.session.execute(check_query, {"user": username_input, "email": email_input}).mappings().first()
+
+        if existing_user:
+            return render_template('register.html', error="Username or Email already registered.")
+
+        # 2. AUTOMATIC ADMIND FINDER: Count how many total users exist right now
+        count_query = text("SELECT COUNT(*) as total FROM users")
+        user_count_result = db.session.execute(count_query).mappings().first()
+
+        # Default assignment is 0 (regular buyer)
+        is_admin_flag = 0
+
+        # If total count is exactly 0, this is the first user! Promote them to Admin!
+        if user_count_result and user_count_result["total"] == 0:
+            is_admin_flag = 1
+
+        # 3. Hash the password safely
+        secure_hash = generate_password_hash(password_input)
+
+        # 4. Insert details along with our dynamic isAdmin assignment status flag
+        insert_user_query = text("""
+            INSERT INTO users (username, password_hash, email, customerName, isAdmin)
+            VALUES (:user, :p_hash, :email, :name, :is_admin)
+        """)
+        db.session.execute(insert_user_query, {
+            "user": username_input,
+            "p_hash": secure_hash,
+            "email": email_input,
+            "name": name_input,
+            "is_admin": is_admin_flag  # Safely bind the variable here
+        })
+
+        db.session.commit()
+
+        if is_admin_flag == 1:
+            flash("First account created successfully! You have been granted Admin controls.", "success")
+        else:
+            flash("Registration successful! Please login below.", "success")
+
+        return redirect(url_for('login'))
+
+    except Exception as e:
+        db.session.rollback()  # Protect PythonAnywhere connection pool health
+        return f"Database Registration Error Encountered: {str(e)}"
+
+#====================================================
+#6. restock products
+#====================================================
+
+@app.route('/admin/restock', methods=['GET', 'POST'])
+@login_required
+
+def restock():
+    # BACKEND SHIELD: Block regular users instantly
+    if not current_user.is_admin:
+        flash("Access Denied: Administrative privileges required.", "danger")
+        return redirect(url_for('checkout'))
+    # ... (Keep the rest of your restock code exactly the same)
+
+    #def restock():
+    if request.method == 'GET':
+        try:
+            get_products_query = text("SELECT productCode, productName, stock FROM products")
+            products_result = db.session.execute(get_products_query).mappings().all()
+            return render_template('restock.html', products=products_result)
+        except Exception as error:
+            db.session.rollback()
+            return f"Failed to load inventory dashboard. Error: {str(error)}"
+
+    # Handle the incoming vendor restock quantities (POST Request)
+    product_code = request.form.get('product_code')
+    topup_qty = request.form.get('quantity')
+    admin_id = current_user.id  # Automatically identify the logged-in user tracking this
+
+    if not product_code or not topup_qty:
+        flash("Please select a product and enter a valid quantity.", "danger")
+        return redirect(url_for('restock'))
+
+    try:
+        topup_qty = int(topup_qty)
+        if topup_qty <= 0:
+            flash("Restock quantity must be greater than zero.", "danger")
+            return redirect(url_for('restock'))
+
+        # OPERATION A: Add vendor quantity to the product stock level
+        update_stock_query = text("""
+            UPDATE products
+            SET stock = stock + :qty
+            WHERE productCode = :code
+        """)
+        result = db.session.execute(update_stock_query, {"qty": topup_qty, "code": product_code})
+
+        if result.rowcount == 0:
+            flash("Inventory error: Product code not found.", "danger")
+            return redirect(url_for('restock'))
+
+        # OPERATION B: Insert a matching history row inside vendor_logs
+        insert_log_query = text("""
+            INSERT INTO vendor_logs (productCode, quantityAdded, processedByCustomerID)
+            VALUES (:code, :qty, :user_id)
+        """)
+        db.session.execute(insert_log_query, {
+            "code": product_code,
+            "qty": topup_qty,
+            "user_id": admin_id
+        })
+
+        # Securely execute both operations atomically together!
+        db.session.commit()
+
+        flash(f"Successfully restocked {topup_qty} units and saved history log!", "success")
+        return redirect(url_for('restock'))
+
+    except Exception as error:
+        # Atomic safeguard: rolls back BOTH Operation A and B if anything goes wrong
+        db.session.rollback()
+        flash(f"Restock transaction failed. Error: {str(error)}", "danger")
+        return redirect(url_for('restock'))
+
+#=====================================
+#7 admin/report page
+#=====================================
+@app.route('/admin/report')
+@login_required
+def admin_report():
+    # BACKEND SHIELD: Protect system from unauthorized consumers
+    if not current_user.is_admin:
+        flash("Access Denied: Administrative privileges required.", "danger")
+        return redirect(url_for('checkout'))
+
+    try:
+        # QUERY 1: Fetch vendor restock history logs (Existing logic)
+        get_logs_query = text("""
+            SELECT
+                l.logID,
+                p.productName,
+                l.quantityAdded,
+                u.customerName,
+                l.createdAt
+            FROM vendor_logs l
+            JOIN products p ON l.productCode = p.productCode
+            JOIN users u ON l.processedByCustomerID = u.customerID
+            ORDER BY l.createdAt DESC
+        """)
+        logs_result = db.session.execute(get_logs_query).mappings().all()
+
+        # QUERY 2: New customer invoice tracking aggregator log list
+        get_sales_query = text("""
+            SELECT
+                o.orderNumber,
+                u.customerName,
+                u.username,
+                SUM(od.quantity) as total_items,
+                SUM(od.quantity * od.price) as total_amount
+            FROM orders o
+            JOIN order_details od ON o.orderNumber = od.orderNumber
+            JOIN users u ON o.customerID = u.customerID
+            GROUP BY o.orderNumber, u.customerName, u.username
+            ORDER BY o.orderNumber DESC
+        """)
+        sales_result = db.session.execute(get_sales_query).mappings().all()
+
+        # Pass BOTH datasets safely to the admin dashboard template
+        return render_template('admin_report.html', logs=logs_result, sales=sales_result)
+
+    except Exception as error:
+        db.session.rollback()  # Protect PythonAnywhere connection pool health
+        return f"CRITICAL REPORT ERROR: {str(error)}"
+
+
+#=====================================
+#8 order/history report page
+#=====================================
+@app.route('/orders/history')
+@login_required
+def order_history():
+    try:
+        # We drop the createdAt column entirely and sort by orderNumber DESC
+        get_orders_query = text("""
+            SELECT
+                o.orderNumber,
+                SUM(od.quantity) as total_items,
+                SUM(od.quantity * od.price) as total_amount
+            FROM orders o
+            JOIN order_details od ON o.orderNumber = od.orderNumber
+            WHERE o.customerID = :customer_id
+            GROUP BY o.orderNumber
+            ORDER BY o.orderNumber DESC
+        """)
+
+        orders_result = db.session.execute(get_orders_query, {
+            "customer_id": current_user.id
+        }).mappings().all()
+
+        return render_template('order_history.html', orders=orders_result)
+
+    except Exception as error:
+        db.session.rollback()  # Clears pool connection errors
+        return f"Failed to load order history. Error: {str(error)}"
+
+#=====================================
+# 9 CREATE THE INVOICE DETAIL ROUTE
+#=====================================
+@app.route('/orders/invoice/<int:order_number>')
+@login_required
+def invoice_details(order_number):
+    try:
+        # SECURITY CHECK + FETCH: Verify this specific order belongs to the logged-in customer
+        check_order_query = text("""
+            SELECT orderNumber
+            FROM orders
+            WHERE orderNumber = :order_num AND customerID = :customer_id
+        """)
+        order_exists = db.session.execute(check_order_query, {
+            "order_num": order_number,
+            "customer_id": current_user.id
+        }).mappings().first()
+
+        # If it doesn't match or exist, throw them back to history with an alert
+        if not order_exists:
+            flash("Access Denied: Invoice details not found or unauthorized.", "danger")
+            return redirect(url_for('order_history'))
+
+        # Fetch the complete itemized product package list for this invoice
+        get_items_query = text("""
+            SELECT productName, productCode, quantity, price
+            FROM order_details
+            WHERE orderNumber = :order_num
+        """)
+        items_result = db.session.execute(get_items_query, {"order_num": order_number}).mappings().all()
+
+        # Calculate total package cost directly in Python to display on the receipt
+        total_invoice_cost = sum(item['quantity'] * item['price'] for item in items_result)
+
+        return render_template(
+            'invoice_details.html',
+            order_number=order_number,
+            items=items_result,
+            total_cost=total_invoice_cost
+        )
+
+    except Exception as error:
+        db.session.rollback()  # Flushes connection pool state on PythonAnywhere
+        return f"Failed to load invoice details. Error: {str(error)}"
+
+
