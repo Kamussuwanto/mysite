@@ -5,13 +5,6 @@ from django.contrib.auth.models import User
 from django.core.exceptions import ValidationError
 
 # Add this function so the old migration file stops crashing
-"""
-def validate_file_size(value):
-    MAX_FILE_SIZE = 5 * 1024 * 1024  # 5 Megabytes
-    if value.size > MAX_FILE_SIZE:
-        raise ValidationError("File size exceeds 5MB.")
-    return value
-"""
 
 def validate_file_size(value):
     MAX_FILE_SIZE = 50 * 1024 * 1024  # Raise to 50 Megabytes

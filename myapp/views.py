@@ -1,17 +1,15 @@
-# To this correct version:
 
 
-# Replace it with this line:
+import os
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.cache import never_cache
+from django.views.decorators.http import require_POST
 from django.contrib import messages
 from .models import UploadedFile
 from .forms import FileUploadForm
 from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth import login
-#from django.db.models import Sum  # <-- Add this import at the top of the file
-
 
 @never_cache
 @login_required
@@ -72,16 +70,19 @@ def upload_file_view(request):
 
 @never_cache
 @login_required
+@require_POST  # Only accepts secure POST actions to prevent scraping/accidental hits
 def delete_file_view(request, file_id):
-    # Security barrier: Ensures users can't delete files belonging to other users
-    file_item = get_object_or_404(UploadedFile, id=file_id, user=request.user)
+    file_obj = get_object_or_404(UploadedFile, id=file_id)
+    filename = file_obj.get_clean_filename()
 
-    # Delete the physical file asset from storage
-    if file_item.file:
-        file_item.file.delete(save=False)
+    if file_obj.file and os.path.exists(file_obj.file.path):
+        os.remove(file_obj.file.path)
 
-    file_item.delete()
-    messages.success(request, "File removed safely.")
+    file_obj.delete()
+
+    messages.success(request, f"Successfully removed: {filename}")
+
+    # MATCH THIS: Use the exact 'name' from your urls.py
     return redirect('upload_file')
 
 
@@ -95,4 +96,10 @@ def signup_view(request):
     else:
         form = UserCreationForm()
     return render(request, 'registration/signup.html', {'form': form})
+
+
+
+
+
+
 

@@ -39,7 +39,13 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "django.contrib.humanize",  # <-- Add this built-in Django app
     'myapp',
+    'tailwind',
+    'theme',
 ]
+
+TAILWIND_APP_NAME = 'theme'
+INTERNAL_IPS = ["127.0.0.1"]
+
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -119,7 +125,7 @@ USE_TZ = True
 # Absolute maximum request data payload size allowed (set to 55MB)
 DATA_UPLOAD_MAX_MEMORY_SIZE = 57671680
 # Files larger than 2.5MB will stream directly to system /tmp disks safely
-FILE_UPLOAD_MAX_MEMORY_SIZE = 2621440
+FILE_UPLOAD_MAX_MEMORY_SIZE = 31457280
 
 STATIC_URL = 'static/'
 STATIC_ROOT = '/home/kamusk/mysite/staticfiles'
